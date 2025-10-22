@@ -10,3 +10,10 @@ nohup.out
 
 # PID
 *.pid
+
+
+*.txt
+
+*.json
+
+encyclopaedia*
