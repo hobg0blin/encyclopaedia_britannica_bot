@@ -12,8 +12,6 @@ nohup.out
 *.pid
 
 
-*.txt
-
 *.json
 
 encyclopaedia*
