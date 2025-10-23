@@ -16,4 +16,5 @@ nohup.out
 encyclopaedia*
 nls*
 
-*.json
+output
+*.zip
