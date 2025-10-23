@@ -37,6 +37,33 @@ class BritannicaTextParser:
 
         return False
 
+    def merge_duplicate_entries(self, entries):
+        """
+        Merge entries with the same or very similar titles.
+        This handles cases where page headers create duplicate entries.
+        """
+        if not entries:
+            return entries
+
+        merged = {}
+        for entry in entries:
+            title = entry['title']
+
+            # Normalize the title for comparison
+            normalized_title = title.strip().rstrip(',.')
+
+            if normalized_title in merged:
+                # Merge with existing entry by appending text
+                merged[normalized_title]['text'] += ' ' + entry['text']
+            else:
+                # New entry
+                merged[normalized_title] = {
+                    'title': normalized_title,
+                    'text': entry['text']
+                }
+
+        return list(merged.values())
+
     def extract_entries(self):
         """
         Extract encyclopedia entries from the text.
@@ -74,15 +101,82 @@ class BritannicaTextParser:
             if any(pattern in line_stripped for pattern in skip_patterns):
                 continue
 
-            # Check if this line starts a new entry
-            # Pattern: line with mostly uppercase letters, may have comma or period
-            # Should have at least one comma or period at the end
+            # Check for single-line entries (title and text on same line)
+            # Pattern: "TITLE, text here." or "TITLE. Text here."
+            single_line_match = re.match(r'^([A-Z][A-Z\s\-]+?)([\.,])\s+(.+)$', line_stripped)
+
+            if single_line_match:
+                title = single_line_match.group(1).strip()
+                text = single_line_match.group(3).strip()
+
+                # Validate the title
+                words = re.findall(r'\b[A-Z]{3,}\b', title)
+
+                # Skip single-letter prefixes
+                if re.match(r'^[A-Z]\s', title) or re.match(r'^[A-Z]$', title):
+                    # Not a valid title, treat as continuation
+                    if in_content and current_entry:
+                        if current_entry['text']:
+                            current_entry['text'] += ' ' + line_stripped
+                        else:
+                            current_entry['text'] = line_stripped
+                    continue
+
+                # Skip titles with excessive spacing
+                if title.count(' ') > 10:
+                    if in_content and current_entry:
+                        if current_entry['text']:
+                            current_entry['text'] += ' ' + line_stripped
+                        else:
+                            current_entry['text'] = line_stripped
+                    continue
+
+                # Must have enough content and valid title
+                if len(title) >= 5 and len(words) >= 1 and len(text) > 10:
+                    # Mark that we're in content now
+                    in_content = True
+
+                    # Save the previous entry if it's valid
+                    if current_entry and current_entry['text']:
+                        if self.is_valid_entry(current_entry['text']):
+                            entries.append(current_entry)
+
+                    # Create new complete entry
+                    current_entry = {
+                        'title': title,
+                        'text': text
+                    }
+
+                    # This is a complete entry, save it
+                    if self.is_valid_entry(current_entry['text']):
+                        entries.append(current_entry)
+                        current_entry = None
+                    continue
+
+            # Check for multi-line entries (title on its own line)
+            # Pattern: line with mostly uppercase letters, may have comma or period at the end
             match = re.match(r'^([A-Z][A-Z\s\-,]+?)[\.,]\s*$', line_stripped)
 
             if match:
-                title = match.group(1).strip()
-                # Additional validation: title should be at least 3 chars and not be a single letter
-                if len(title) >= 3 and not re.match(r'^[A-Z]$', title):
+                title = match.group(1).strip().rstrip(',.')
+
+                # Additional validation to avoid page headers and fragments:
+                # 1. Title should be at least 5 characters
+                # 2. Should not start with a single letter followed by space/comma (e.g., "M, ANIMAL", "H MAGNETISM")
+                # 3. Should contain at least one complete word of 3+ letters
+                # 4. Should not have excessive spacing (OCR artifact like "M A G N E T I S M")
+
+                # Skip single-letter prefixes
+                if re.match(r'^[A-Z]\s', title) or re.match(r'^[A-Z],', title):
+                    continue
+
+                # Skip titles with excessive spacing (more than 3 spaces suggests OCR issues)
+                if title.count(' ') > 10:
+                    continue
+
+                words = re.findall(r'\b[A-Z]{3,}\b', title)
+
+                if len(title) >= 5 and len(words) >= 1:
                     # Mark that we're in content now
                     in_content = True
 
@@ -112,6 +206,9 @@ class BritannicaTextParser:
         if current_entry and current_entry['text']:
             if self.is_valid_entry(current_entry['text']):
                 entries.append(current_entry)
+
+        # Merge duplicate entries
+        entries = self.merge_duplicate_entries(entries)
 
         return entries
 
@@ -186,6 +283,8 @@ def main():
                         help='Write output to JSON file instead of printing')
     parser.add_argument('--text-only', action='store_true',
                         help='Only include title and text in output (exclude file paths)')
+    parser.add_argument('--split', type=int, metavar='N',
+                        help='Split output into multiple files with N entries each (only with --json)')
 
     args = parser.parse_args()
     path = args.path
@@ -242,9 +341,35 @@ def main():
         else:
             output_data = results
 
-        with open(args.json_output, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, indent=2, ensure_ascii=False)
-        print(f"Wrote {len(output_data)} result(s) to {args.json_output}")
+        # Split into multiple files if requested
+        if args.split:
+            # Flatten all entries from all results
+            all_entries = []
+            for result in output_data:
+                all_entries.extend(result['entries'])
+
+            # Get base filename without extension
+            base_name = os.path.splitext(args.json_output)[0]
+            ext = os.path.splitext(args.json_output)[1] or '.json'
+
+            # Split into chunks
+            total_files = 0
+            for i in range(0, len(all_entries), args.split):
+                chunk = all_entries[i:i + args.split]
+                file_num = (i // args.split) + 1
+                output_file = f"{base_name}_{file_num}{ext}"
+
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump([{'entries': chunk}], f, indent=2, ensure_ascii=False)
+
+                total_files += 1
+                print(f"Wrote {len(chunk)} entries to {output_file}")
+
+            print(f"Total: {len(all_entries)} entries across {total_files} file(s)")
+        else:
+            with open(args.json_output, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            print(f"Wrote {len(output_data)} result(s) to {args.json_output}")
 
 
 if __name__ == '__main__':
