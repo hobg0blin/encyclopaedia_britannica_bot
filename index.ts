@@ -15,42 +15,67 @@ const agent = new BskyAgent({
 
 const INDEX_FILE = path.join(__dirname, 'current_index.txt');
 
-// Load all encyclopedia entries from JSON files
-function loadAllEntries(): Array<{title: string, text: string}> {
-    const entries: Array<{title: string, text: string}> = [];
-
-    // Find all output JSON files (supports both single file and split files)
-    const jsonFiles = globSync('output*.json', { cwd: __dirname });
+// Get list of JSON files and count total entries without loading them all
+function getEntryCount(): { files: string[], totalEntries: number } {
+    const jsonFiles = globSync('output/output*.json', { cwd: __dirname }).sort();
 
     if (jsonFiles.length === 0) {
         console.error('No output JSON files found!');
-        return entries;
+        return { files: [], totalEntries: 0 };
     }
 
-    console.log(`Loading entries from ${jsonFiles.length} file(s)...`);
+    let totalEntries = 0;
+    for (const file of jsonFiles) {
+        try {
+            const filePath = path.join(__dirname, file);
+            const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+            for (const page of data) {
+                if (page.entries) {
+                    totalEntries += page.entries.length;
+                }
+            }
+        } catch (error) {
+            console.error(`Error counting entries in ${file}:`, error);
+        }
+    }
 
-    for (const file of jsonFiles.sort()) {
+    console.log(`Found ${jsonFiles.length} file(s) with ${totalEntries} total entries`);
+    return { files: jsonFiles, totalEntries };
+}
+
+// Load a specific entry by index without loading all entries
+function getEntryByIndex(files: string[], index: number): {title: string, text: string} | null {
+    let currentCount = 0;
+
+    for (const file of files) {
         try {
             const filePath = path.join(__dirname, file);
             const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 
-            // Handle both formats: array of pages with entries, or direct entries
             for (const page of data) {
                 if (page.entries) {
-                    entries.push(...page.entries);
+                    const entriesInThisPage = page.entries.length;
+
+                    // Check if the index falls within this file
+                    if (index < currentCount + entriesInThisPage) {
+                        const localIndex = index - currentCount;
+                        return page.entries[localIndex];
+                    }
+
+                    currentCount += entriesInThisPage;
                 }
             }
         } catch (error) {
             console.error(`Error loading ${file}:`, error);
+            return null;
         }
     }
 
-    console.log(`Loaded ${entries.length} total entries`);
-    return entries;
+    return null;
 }
 
-// Flatten all entries from all pages into a single array
-const allEntries = loadAllEntries();
+// Get entry info without loading all entries into memory
+const { files: jsonFiles, totalEntries } = getEntryCount();
 
 function getCurrentIndex(): number {
     try {
@@ -104,13 +129,18 @@ async function main() {
     const currentIndex = getCurrentIndex();
 
     // Check if we have entries to post
-    if (allEntries.length === 0) {
+    if (totalEntries === 0) {
         console.log('No entries found in encyclopedia');
         return;
     }
 
     // Get the current entry (wrap around if we've reached the end)
-    const entry = allEntries[currentIndex % allEntries.length];
+    const entry = getEntryByIndex(jsonFiles, currentIndex % totalEntries);
+
+    if (!entry) {
+        console.error('Failed to load entry at index', currentIndex);
+        return;
+    }
 
     // Create post with title and text
     const titleWithSeparator = `${entry.title}\n\n`;
@@ -126,7 +156,7 @@ async function main() {
     const graphemeLength = countGraphemes(postText);
     const byteLength = Buffer.byteLength(postText, 'utf8');
 
-    console.log(`Posting entry ${currentIndex + 1} of ${allEntries.length}`);
+    console.log(`Posting entry ${currentIndex + 1} of ${totalEntries}`);
     console.log(`Title: ${entry.title}`);
     console.log(`Title: ${titleGraphemes} graphemes`);
     console.log(`Original text: ${entry.text.length} chars, ${countGraphemes(entry.text)} graphemes`);
