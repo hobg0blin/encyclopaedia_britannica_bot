@@ -252,7 +252,7 @@ def parse_britannica_directory(directory_path, recursive=True):
 
     # Recursively find all XML files in subdirectories
     pattern = '**/*.xml' if recursive else '*.xml'
-    xml_files = directory.glob(pattern)
+    xml_files = sorted(directory.glob(pattern))  # Sort files for consistent ordering
 
     for xml_file in xml_files:
         try:

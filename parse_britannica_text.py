@@ -262,7 +262,7 @@ def parse_britannica_text_directory(directory_path, recursive=True):
 
     # Recursively find all text files in subdirectories
     pattern = '**/*.txt' if recursive else '*.txt'
-    text_files = directory.glob(pattern)
+    text_files = sorted(directory.glob(pattern))  # Sort files for consistent ordering
 
     for text_file in text_files:
         try:
